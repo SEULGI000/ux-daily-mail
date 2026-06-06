@@ -1,0 +1,28 @@
+name: Daily UX/UI Mail
+
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-mail:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Send mail
+        env:
+          NAVER_EMAIL: ${{ secrets.NAVER_EMAIL }}
+          NAVER_APP_PASSWORD: ${{ secrets.NAVER_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: python main.py
