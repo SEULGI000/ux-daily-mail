@@ -4,12 +4,12 @@
 import os
 
 # ==================== 네이버 메일 설정 ====================
-# 비밀번호 등 민감 정보는 환경변수(GitHub Secrets)에서 먼저 읽고,
-# 없으면 아래 기본값을 사용한다(로컬 실행용).
-# ⚠️ 이 파일을 GitHub에 올릴 때는 반드시 'Private(비공개)' 저장소를 쓰세요.
-NAVER_EMAIL = os.environ.get("NAVER_EMAIL", "csg6316@naver.com")
-NAVER_APP_PASSWORD = os.environ.get("NAVER_APP_PASSWORD", "TYHDJN4NFZ35")
-RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", "csg6316@naver.com")
+# 민감 정보(이메일/비밀번호)는 코드에 절대 적지 않고,
+# 오직 환경변수(GitHub Secrets)에서만 읽는다. → 저장소를 공개해도 안전.
+# 로컬에서 직접 돌릴 땐 실행 전에 환경변수를 설정해야 한다.
+NAVER_EMAIL = os.environ.get("NAVER_EMAIL", "")
+NAVER_APP_PASSWORD = os.environ.get("NAVER_APP_PASSWORD", "")
+RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", "")
 
 # ==================== 아티클 수집 설정 ====================
 # UX/UI 관련 아티클 소스들 (RSS 피드)

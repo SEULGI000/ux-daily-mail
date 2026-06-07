@@ -1,6 +1,7 @@
 # ===== 자동화 메인 스크립트 (추천 링크 메일 버전) =====
-# UX/UI 디자인 아티클 3개를 선별해 "제목: 링크" 형식으로 메일 발송
+# UX/UI 디자인 아티클을 선별해 "제목: 링크" 형식으로 메일 발송
 # (PDF/첨부 없음, 본문에 추천 링크만)
+# 이미 보낸 글은 sent_history.json에 기억해두고 다음엔 새 글을 우선 추천한다.
 
 import sys
 # Windows 콘솔(cp949)에서 이모지/한글 출력 시 깨지거나 죽는 것을 방지
@@ -13,12 +14,10 @@ import feedparser
 import datetime
 import re
 import html
+import json
 from email.mime.text import MIMEText
 from email.utils import formatdate
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-
-# 링크에서 제거할 추적용 쿼리 파라미터(이 외에 utm_* 전부 제거)
-TRACKING_PARAMS = {"source", "ref", "fbclid", "gi", "gclid", "igshid", "spm"}
 
 # config.py에서 설정값 불러오기
 from config import (
@@ -27,6 +26,13 @@ from config import (
     CORE_KEYWORDS, TOPIC_KEYWORDS, BEGINNER_KEYWORDS,
     ADVANCED_KEYWORDS, EXCLUDE_KEYWORDS, MIN_CONTENT_LENGTH,
 )
+
+# 링크에서 제거할 추적용 쿼리 파라미터(이 외에 utm_* 전부 제거)
+TRACKING_PARAMS = {"source", "ref", "fbclid", "gi", "gclid", "igshid", "spm"}
+
+# 이미 보낸 링크를 기억하는 파일 (매일 다른 글을 보내기 위함)
+HISTORY_FILE = "sent_history.json"
+MAX_HISTORY = 60   # 최근 60개까지 기억 (그 이후엔 다시 추천 가능)
 
 
 # ==================== 유틸리티 ====================
@@ -56,6 +62,31 @@ def clean_link(url):
         return url
 
 
+# ==================== 보낸 글 기억(히스토리) ====================
+def load_history():
+    """이전에 보낸 링크 목록을 읽어온다. 파일이 없으면 빈 목록."""
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"  ⚠️ 히스토리 읽기 실패(무시): {e}")
+    return []
+
+
+def save_history(links):
+    """보낸 링크 목록을 저장한다 (최근 MAX_HISTORY개만 유지)."""
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(links[-MAX_HISTORY:], f, ensure_ascii=False, indent=1)
+        print(f"  💾 히스토리 저장 완료 (총 {min(len(links), MAX_HISTORY)}개 기억)")
+    except Exception as e:
+        print(f"  ⚠️ 히스토리 저장 실패: {e}")
+
+
 # ==================== 1단계: 아티클 수집 ====================
 def collect_articles():
     """RSS 피드에서 아티클을 모은다."""
@@ -65,7 +96,7 @@ def collect_articles():
         try:
             feed = feedparser.parse(feed_url)
             print(f"  📡 {feed_url[:50]}... 수집")
-            for entry in feed.entries[:20]:
+            for entry in feed.entries[:30]:   # 풀을 넓혀 매일 다른 글 확보
                 all_articles.append({
                     "title": clean_text(entry.get("title", "제목 없음")),
                     "link": clean_link(entry.get("link", "")),
@@ -88,31 +119,25 @@ def score_article(article):
     """
     text = (article["title"] + " " + article["summary"]).lower()
 
-    # 스팸/비아티클 제외
     for kw in EXCLUDE_KEYWORDS:
         if kw.lower() in text:
             return None
 
-    # [조건1] UX/UI 디자인 핵심 키워드가 하나도 없으면 추천 대상 아님
     core_hits = 0
     score = 0
     for idx, kw in enumerate(CORE_KEYWORDS):
         if kw.lower() in text:
             core_hits += 1
-            score += (len(CORE_KEYWORDS) - idx) * 8   # 우선순위 가중치
+            score += (len(CORE_KEYWORDS) - idx) * 8
     if core_hits == 0:
         return None
 
-    # 콘텐츠 길이 (너무 짧은 글 감점)
     if len(article["summary"]) < MIN_CONTENT_LENGTH:
         score -= 20
 
-    # [조건3] 사용자 심리 · 트렌드 주제 가점
     for kw in TOPIC_KEYWORDS:
         if kw.lower() in text:
             score += 25
-
-    # [조건2] 신입 친화 가점 / 고난도 감점
     for kw in BEGINNER_KEYWORDS:
         if kw.lower() in text:
             score += 15
@@ -123,9 +148,11 @@ def score_article(article):
     return score
 
 
-def select_articles(all_articles):
-    """점수가 높은 상위 N개를 추천으로 선별한다. (중복 제목 제거)"""
+def select_articles(all_articles, sent_links):
+    """점수 높은 글 중에서, '이미 보낸 글'을 빼고 새 글을 우선 선별한다."""
     print("\n[2단계] 조건에 맞는 추천 아티클 선별 중...")
+    sent = set(sent_links)
+
     scored = []
     seen_titles = set()
     for art in all_articles:
@@ -140,11 +167,25 @@ def select_articles(all_articles):
             scored.append((s, art))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    picked = [art for _, art in scored[:NUM_ARTICLES]]
 
-    print(f"✅ 추천 {len(picked)}개 선별 완료!")
-    for i, (s, art) in enumerate(scored[:NUM_ARTICLES], 1):
-        print(f"   [{i}] ({s}점) {art['title'][:45]}")
+    # 1순위: 아직 안 보낸 새 글
+    fresh = [a for s, a in scored if a["link"] not in sent]
+    picked = fresh[:NUM_ARTICLES]
+
+    # 새 글이 부족한 날이면(피드에 새 글이 적을 때) 나머지로 채운다
+    if len(picked) < NUM_ARTICLES:
+        picked_links = {a["link"] for a in picked}
+        for s, a in scored:
+            if a["link"] not in picked_links:
+                picked.append(a)
+                picked_links.add(a["link"])
+                if len(picked) >= NUM_ARTICLES:
+                    break
+
+    print(f"✅ 추천 {len(picked)}개 선별 완료! (새 글 {min(len(fresh), NUM_ARTICLES)}개)")
+    for i, a in enumerate(picked, 1):
+        mark = "🆕" if a["link"] not in sent else "♻️"
+        print(f"   [{i}] {mark} {a['title'][:45]}")
     return picked
 
 
@@ -170,6 +211,10 @@ def send_email(articles):
     print("\n----- 메일 본문 미리보기 -----")
     print(body)
     print("------------------------------\n")
+
+    if not NAVER_EMAIL or not NAVER_APP_PASSWORD:
+        print("❌ 메일 계정 정보(환경변수)가 비어 있습니다. Secrets를 확인하세요.")
+        return False
 
     try:
         server = smtplib.SMTP("smtp.naver.com", 587)
@@ -201,14 +246,20 @@ def main():
     print("=" * 50 + "\n")
 
     try:
+        history = load_history()
         all_articles = collect_articles()
-        picked = select_articles(all_articles)
+        picked = select_articles(all_articles, history)
 
         if not picked:
             print("⚠️ 조건에 맞는 추천 아티클이 없습니다!")
             return
 
-        send_email(picked)
+        ok = send_email(picked)
+
+        # 발송 성공 시에만 '보낸 글'로 기록 (다음엔 제외됨)
+        if ok:
+            new_history = history + [a["link"] for a in picked]
+            save_history(new_history)
 
         print("\n" + "=" * 50)
         print("✅ 모든 작업 완료!")
